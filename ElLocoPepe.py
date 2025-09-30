@@ -5,6 +5,75 @@ import pandas as pd
 import streamlit as st
 
 # ---------------------------
+# Custom CSS for Better Mobile Experience
+# ---------------------------
+st.markdown("""
+<style>
+    /* Mobile-friendly improvements */
+    .stForm {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.05);
+    }
+    
+    /* Better button spacing on mobile */
+    .stButton > button {
+        margin: 2px 0;
+    }
+    
+    /* Improve dataframe readability */
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Hide increment/decrement buttons on number inputs */
+    .stNumberInput input[type="number"]::-webkit-outer-spin-button,
+    .stNumberInput input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+    
+    .stNumberInput input[type="number"] {
+        -moz-appearance: textfield;
+    }
+    
+    /* Additional CSS to hide spin buttons */
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+    
+    input[type="number"] {
+        -moz-appearance: textfield;
+    }
+    
+    
+    
+    /* Green register button - target form submit buttons */
+    .stForm button[type="submit"],
+    .stForm .stButton > button,
+    div[data-testid="stForm"] button {
+        background: linear-gradient(135deg, #28a745 0%, #34ce57 100%) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+    }
+    
+    .stForm button[type="submit"]:hover,
+    .stForm .stButton > button:hover,
+    div[data-testid="stForm"] button:hover {
+        background: linear-gradient(135deg, #218838 0%, #2db84a 100%) !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 12px rgba(40, 167, 69, 0.3) !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------
 # Config (tweak as you like)
 # ---------------------------
 REFRESH_SECONDS = 10        # live feel for viewers
@@ -53,7 +122,7 @@ def parse_power(power_input):
         base_value = float(power_str)
         return int(base_value * 1_000_000)
 
-def upsert_member(name: str, power, slots: int, online: bool):
+def upsert_member(name: str, power, slots: int, online: bool, x_coord: int = 0, y_coord: int = 0):
     now = datetime.utcnow().isoformat()
     with store.lock:
         rec = store.members.get(name.strip(), {})
@@ -61,6 +130,8 @@ def upsert_member(name: str, power, slots: int, online: bool):
             "power": parse_power(power),
             "slots_to_send": int(slots),
             "online": bool(online),
+            "x_coord": int(x_coord),
+            "y_coord": int(y_coord),
             "updated_at": now,
         })
         store.members[name.strip()] = rec
@@ -74,10 +145,20 @@ def set_all_online(status: bool):
 def members_df() -> pd.DataFrame:
     with store.lock:
         if not store.members:
-            return pd.DataFrame(columns=["name","power","slots_to_send","online","updated_at"])
+            return pd.DataFrame(columns=["name","power","slots_to_send","online","x_coord","y_coord","updated_at"])
         rows = [{"name": n, **rec} for n, rec in store.members.items()]
     df = pd.DataFrame(rows)
-    df = df[["name","power","slots_to_send","online","updated_at"]].sort_values("power", ascending=False)
+    
+    # Ensure all required columns exist, add defaults for missing ones
+    required_cols = ["name","power","slots_to_send","online","x_coord","y_coord","updated_at"]
+    for col in required_cols:
+        if col not in df.columns:
+            if col in ["x_coord", "y_coord"]:
+                df[col] = 0
+            else:
+                df[col] = ""
+    
+    df = df[required_cols].sort_values("power", ascending=False)
     
     # Convert power to millions for display
     df["power"] = (df["power"] / 1_000_000).round(1)
@@ -187,9 +268,37 @@ def assignments_df() -> pd.DataFrame:
     with store.lock:
         if not store.assignments:
             return pd.DataFrame(columns=["sender","targets"])
-        rows = [{"sender": s, "targets": ", ".join(tgts)} for s, tgts in store.assignments.items()]
+        
+        # Get member coordinates for display
+        member_coords = {}
+        for name, rec in store.members.items():
+            x = rec.get("x_coord", 0)
+            y = rec.get("y_coord", 0)
+            member_coords[name] = f"({x},{y})"
+        
+        rows = []
+        for s, tgts in store.assignments.items():
+            # Format targets with coordinates
+            target_list = []
+            for t in tgts:
+                coords = member_coords.get(t, "(0,0)")
+                target_list.append(f"{t} {coords}")
+            rows.append({"sender": s, "targets": ", ".join(target_list)})
+        
         df = pd.DataFrame(rows).sort_values("sender").reset_index(drop=True)
         return df
+
+def remove_member(name: str):
+    with store.lock:
+        if name in store.members:
+            del store.members[name]
+            # Also remove from assignments if they were a sender
+            if name in store.assignments:
+                del store.assignments[name]
+            # Remove them from other people's target lists
+            for sender, targets in store.assignments.items():
+                if name in targets:
+                    targets.remove(name)
 
 def reset_event():
     with store.lock:
@@ -267,61 +376,127 @@ with st.form("me_form", clear_on_submit=True):
             help="How many reinforcements you can send. Stronger players (50M+) should use 4-5 slots, weaker players use 2-3 slots"
         )
     with c4:
-        my_online = st.toggle(
-            "I'm Available", 
-            value=True,
-            help="Toggle ON if you're available for this event"
+        st.write("")  # Empty space for layout balance
+    
+    # Location coordinates
+    st.markdown("**Your Location**")
+    col_x, col_y = st.columns([1, 1])
+    with col_x:
+        my_x = st.text_input(
+            "X Coordinate", 
+            value="0",
+            max_chars=3,
+            help="Your X coordinate in the game (0-999)",
+            key="coord_x"
         )
-    submitted = st.form_submit_button("🎯 Register for Event", type="primary")
+    with col_y:
+        my_y = st.text_input(
+            "Y Coordinate", 
+            value="0",
+            max_chars=3,
+            help="Your Y coordinate in the game (0-999)",
+            key="coord_y"
+        )
+    
+    submitted = st.form_submit_button("🎯 Register for Event", help="By registering, you commit to being online and reinforcing alliance members during the event", use_container_width=True)
 
 if submitted and my_name.strip():
     try:
-        upsert_member(my_name.strip(), my_power, int(my_slots), bool(my_online))
-        st.success("✅ **Registered successfully!** You're now part of the Crazy Joe event. Your status is locked until the next event.")
+        # Validate coordinates are 3-digit numbers
+        x_coord = int(my_x) if my_x.isdigit() and len(my_x) <= 3 else 0
+        y_coord = int(my_y) if my_y.isdigit() and len(my_y) <= 3 else 0
+        
+        if not (0 <= x_coord <= 999):
+            st.error("❌ X coordinate must be between 0-999")
+        elif not (0 <= y_coord <= 999):
+            st.error("❌ Y coordinate must be between 0-999")
+        else:
+            upsert_member(my_name.strip(), my_power, int(my_slots), True, x_coord, y_coord)
+            st.success("✅ **Registered successfully!** You're now part of the Crazy Joe event. Your status is locked until the next event.")
     except ValueError as e:
         st.error(f"Invalid power value: {my_power}. Please enter a number or number with 'M' suffix (e.g., 128M).")
 
 df = members_df()
 
-left, right = st.columns(2)
-with left:
-    st.subheader("👥 Event Participants")
-    registered_count = len(df[df["online"]])
-    total_count = len(df)
-    st.metric("Registered Members", f"{registered_count}/{total_count}")
-    if registered_count > 0:
+# Check if board is locked for event status
+with store.lock:
+    current_locked = store.locked
+
+if current_locked:
+    st.markdown("""
+    <div style="background-color: #ff4444; color: white; padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 10px;">
+        <h3 style="margin: 0; color: white;">🚀 EVENT STARTED</h3>
+        <p style="margin: 5px 0 0 0; font-size: 14px; color: #ffcccc;">Board locked - assignments are final</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.subheader("🎯 Reinforcement Assignments")
+# Recalc button
+can_recalc = not current_locked
+if st.button("Recalculate assignments", type="primary", disabled=not can_recalc):
+    online_df = df[df["online"]].copy()
+    assign_map = compute_assignments(online_df)
+    save_assignments(assign_map)
+    st.success(f"Assignments recalculated (batch {store.batch_id} UTC).")
+
+# Show saved assignments, or a live preview if none saved yet
+saved = assignments_df()
+if saved.empty:
+    preview = df[df["online"]].copy()
+    if not preview.empty:
+        pre_map = compute_assignments(preview)
+        # Get member coordinates for preview
+        member_coords = {}
+        for name, rec in store.members.items():
+            x = rec.get("x_coord", 0)
+            y = rec.get("y_coord", 0)
+            member_coords[name] = f"({x},{y})"
+        
+        pre_rows = []
+        for s, tgts in pre_map.items():
+            target_list = []
+            for t in tgts:
+                coords = member_coords.get(t, "(0,0)")
+                target_list.append(f"{t} {coords}")
+            pre_rows.append({"sender": s, "targets": ", ".join(target_list)})
+        
+        st.info("No saved batch yet. Showing live preview (not locked).")
+        st.dataframe(pd.DataFrame(pre_rows).sort_values("sender").reset_index(drop=True),
+                     use_container_width=True)
+    else:
+        st.write("—")
+else:
+    if store.batch_id:
+        st.caption(f"Batch: **{store.batch_id} UTC**")
+    st.dataframe(saved, use_container_width=True)
+
+st.divider()
+
+# Event Participants (moved to bottom for mobile)
+st.subheader("👥 Event Participants")
+registered_count = len(df[df["online"]])
+total_count = len(df)
+st.metric("Registered Members", f"{registered_count}/{total_count}")
+
+if registered_count > 0:
+    # Show participants with remove buttons for admins
+    if authed:
+        st.info("🔧 **Admin Mode**: You can remove individual players below")
+        for idx, row in df[df["online"]].iterrows():
+            col1, col2, col3 = st.columns([3, 1, 0.5])
+            with col1:
+                st.write(f"**{row['name']}** - Power: {row['power']}M - Slots: {row['slots_to_send']} - Location: ({row['x_coord']},{row['y_coord']})")
+            with col2:
+                if st.button("❌ Remove", key=f"remove_{row['name']}", type="secondary"):
+                    remove_member(row['name'])
+                    st.success(f"Removed {row['name']} from the event")
+                    st.rerun()
+            with col3:
+                st.write("")  # Spacer
+    else:
         st.dataframe(df[df["online"]].reset_index(drop=True), use_container_width=True)
-    else:
-        st.info("No members registered yet. Be the first to join the event!")
-
-with right:
-    st.subheader("🎯 Reinforcement Assignments")
-    # Recalc button
-    with store.lock:
-        current_locked = store.locked
-    can_recalc = authed and not current_locked
-    if st.button("Recalculate assignments", type="primary", disabled=not can_recalc):
-        online_df = df[df["online"]].copy()
-        assign_map = compute_assignments(online_df)
-        save_assignments(assign_map)
-        st.success(f"Assignments recalculated (batch {store.batch_id} UTC).")
-
-    # Show saved assignments, or a live preview if none saved yet
-    saved = assignments_df()
-    if saved.empty:
-        preview = df[df["online"]].copy()
-        if not preview.empty:
-            pre_map = compute_assignments(preview)
-            pre_rows = [{"sender": s, "targets": ", ".join(t)} for s, t in pre_map.items()]
-            st.info("No saved batch yet. Showing live preview (not locked).")
-            st.dataframe(pd.DataFrame(pre_rows).sort_values("sender").reset_index(drop=True),
-                         use_container_width=True)
-        else:
-            st.write("—")
-    else:
-        if store.batch_id:
-            st.caption(f"Batch: **{store.batch_id} UTC**")
-        st.dataframe(saved, use_container_width=True)
+else:
+    st.info("No members registered yet. Be the first to join the event!")
 
 st.divider()
 

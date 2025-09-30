@@ -20,6 +20,16 @@ st.markdown("""
     /* Better button spacing on mobile */
     .stButton > button {
         margin: 2px 0;
+        min-height: 44px; /* iOS recommended touch target */
+        padding: 12px 16px;
+    }
+    
+    /* Improve mobile touch targets */
+    .stTextInput input,
+    .stSelectbox select,
+    .stNumberInput input {
+        min-height: 44px;
+        font-size: 16px; /* Prevents zoom on iOS */
     }
     
     /* Improve dataframe readability */
@@ -313,24 +323,25 @@ def reset_event():
 st.title("🧊 TMR Alliance - EL Loco Pepe!")
 st.caption("Crazy Joe Roster and Reinforcement Assignments - Made by Cirtcele")
 
+
 # Instructions
 with st.expander("📋 How to Use This App", expanded=False):
     st.markdown("""
-    **For Alliance Members:**
-    1. **Register Once**: Enter your name, power (in millions), slots to send, and availability
-    2. **Choose Slots Wisely**: 
-       - **Stronger players (50M+)**: Use 4-5 slots to send more reinforcements
-       - **Weaker players (under 50M)**: Use 2-3 slots to avoid overextending
-    3. **View Roster**: See all registered members and their power levels
-    4. **Check Assignments**: See who you should reinforce and who will reinforce you
-    5. **Event Duration**: Your registration lasts for the entire event (about a week)
+    **🎯 For Alliance Members:**
+    1. **📝 Register Once**: Enter your name, power (in millions), slots to send, and coordinates
+    2. **💪 Choose Slots Wisely**: 
+       - **🔥 Stronger players (50M+)**: Use 4-5 slots to send more reinforcements
+       - **⚡ Weaker players (under 50M)**: Use 2-3 slots to avoid overextending
+    3. **👥 View Roster**: See all registered members and their power levels
+    4. **🎯 Check Assignments**: See who you should reinforce and who will reinforce you
+    5. **⏰ Event Duration**: Your registration lasts for the entire event (about a week)
+    6. **📍 Use Coordinates**: Find allies easily with their X,Y coordinates
     
     **For Admins:**
     1. **Enter Password**: Use the admin password in the sidebar
     2. **Choose Mode**: Select between Balanced Distribution or Power-Based Matching
     3. **Lock Board**: Prevent assignment changes during events
-    4. **Export Data**: Download roster and assignments as CSV files
-    5. **Reset Event**: Clear all data when event ends
+    4. **Reset Event**: Clear all data when event ends
     
     **Assignment Modes:**
     - **Balanced**: Everyone gets equal reinforcements (fair play)
@@ -351,7 +362,6 @@ else:
 
 # Member registration form
 st.subheader("📝 Register for Crazy Joe Event")
-st.info("💡 **One-time registration**: Register once for the event. Your status will be locked until the next event!")
 
 with st.form("me_form", clear_on_submit=True):
     c1, c2, c3, c4 = st.columns([2,1.4,1,1.3])
@@ -400,21 +410,54 @@ with st.form("me_form", clear_on_submit=True):
     
     submitted = st.form_submit_button("🎯 Register for Event", help="By registering, you commit to being online and reinforcing alliance members during the event", use_container_width=True)
 
-if submitted and my_name.strip():
-    try:
-        # Validate coordinates are 3-digit numbers
-        x_coord = int(my_x) if my_x.isdigit() and len(my_x) <= 3 else 0
-        y_coord = int(my_y) if my_y.isdigit() and len(my_y) <= 3 else 0
+if submitted:
+    # Check if board is locked
+    with store.lock:
+        current_locked = store.locked
+    
+    if current_locked:
+        st.error("🔒 **Board is LOCKED!** Registration is closed during the event.")
+    else:
+        # Validate all fields are filled with better error messages
+        errors = []
         
-        if not (0 <= x_coord <= 999):
-            st.error("❌ X coordinate must be between 0-999")
-        elif not (0 <= y_coord <= 999):
-            st.error("❌ Y coordinate must be between 0-999")
+        if not my_name.strip():
+            errors.append("📝 **Name is required** - Enter your exact in-game name")
+        elif len(my_name.strip()) < 2:
+            errors.append("📝 **Name too short** - Enter at least 2 characters")
+        
+        if not my_power.strip():
+            errors.append("⚡ **Power is required** - Enter your power level (e.g., 125 or 24.5)")
+        elif not my_power.replace('.', '').replace('M', '').isdigit():
+            errors.append("⚡ **Invalid power format** - Use numbers only (e.g., 125 or 24.5)")
+        
+        if not my_x.strip() or my_x.strip() == "0":
+            errors.append("📍 **X coordinate is required** - Enter your X coordinate (000-999)")
+        elif not my_x.isdigit() or len(my_x) != 3:
+            errors.append("📍 **X coordinate must be exactly 3 digits** - Enter 000-999")
+        elif not (0 <= int(my_x) <= 999):
+            errors.append("📍 **X coordinate out of range** - Must be between 000-999")
+        
+        if not my_y.strip() or my_y.strip() == "0":
+            errors.append("📍 **Y coordinate is required** - Enter your Y coordinate (000-999)")
+        elif not my_y.isdigit() or len(my_y) != 3:
+            errors.append("📍 **Y coordinate must be exactly 3 digits** - Enter 000-999")
+        elif not (0 <= int(my_y) <= 999):
+            errors.append("📍 **Y coordinate out of range** - Must be between 000-999")
+        
+        if errors:
+            st.error("**Please fix the following issues:**")
+            for error in errors:
+                st.error(error)
         else:
-            upsert_member(my_name.strip(), my_power, int(my_slots), True, x_coord, y_coord)
-            st.success("✅ **Registered successfully!** You're now part of the Crazy Joe event. Your status is locked until the next event.")
-    except ValueError as e:
-        st.error(f"Invalid power value: {my_power}. Please enter a number or number with 'M' suffix (e.g., 128M).")
+            try:
+                # All validation passed, register the member
+                x_coord = int(my_x)
+                y_coord = int(my_y)
+                upsert_member(my_name.strip(), my_power, int(my_slots), True, x_coord, y_coord)
+                st.success("✅ **Registration Successful!** You're now registered for the Crazy Joe event.")
+            except ValueError as e:
+                st.error(f"❌ **Registration failed:** {str(e)}")
 
 df = members_df()
 
@@ -541,46 +584,23 @@ with st.expander("🔧 Admin Tools", expanded=False):
         if new_locked != current_locked and authed:
             with store.lock:
                 store.locked = new_locked
-            if new_locked:
-                st.warning("🔒 Board is now LOCKED - assignments won't change")
-            else:
-                st.success("🔓 Board is now UNLOCKED - assignments can be recalculated")
+        if new_locked:
+            st.warning("🔒 Board is now LOCKED - assignments won't change")
+        else:
+            st.success("🔓 Board is now UNLOCKED - assignments can be recalculated")
         
         st.divider()
         
-        st.subheader("📊 Data Management")
+        # Reset Event Button
+        if st.button(
+            "🧹 Reset Event", 
+            type="secondary", 
+            disabled=not authed,
+            help="⚠️ WARNING: This will clear ALL data from memory!"
+        ):
+            reset_event()
+            st.success("✅ Cleared all members and assignments from memory.")
         
-        c1, c2, c3 = st.columns([1.4,1.2,2])
-        with c1:
-            # Export current members
-            csv_members = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Download Roster CSV", 
-                csv_members, 
-                "crazy_joe_roster.csv",
-                disabled=df.empty or not authed,
-                help="Download current member roster with power levels and status"
-            )
-        with c2:
-            # Export assignments
-            saved = assignments_df()
-            csv_assign = saved.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Download Assignments CSV", 
-                csv_assign, 
-                "crazy_joe_assignments.csv",
-                disabled=saved.empty or not authed,
-                help="Download current reinforcement assignments"
-            )
-        with c3:
-            if st.button(
-                "🧹 Reset Event", 
-                type="secondary", 
-                disabled=not authed,
-                help="⚠️ WARNING: This will clear ALL data from memory!"
-            ):
-                reset_event()
-                st.success("✅ Cleared all members and assignments from memory.")
 
 st.caption("Note: This version stores everything in memory only. If the app restarts, data resets. Export before you reset/end the event.")
 # Simple auto-refresh

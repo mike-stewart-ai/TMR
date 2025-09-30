@@ -194,21 +194,15 @@ def compute_assignments(online_df: pd.DataFrame) -> dict:
         return compute_power_based_assignments(online_df)
 
 def compute_balanced_assignments(online_df: pd.DataFrame) -> dict:
-    """Balanced distribution: ensures equal reinforcement distribution."""
+    """Balanced distribution: ensures each target gets reinforced by only one sender."""
     senders = online_df.copy()
     targets = online_df.copy()
 
-    total_slots = int(senders["slots_to_send"].sum())
-    if MAX_INCOMING_CAP is None:
-        cap = max(1, math.ceil(total_slots / max(1, len(targets))))
-    else:
-        cap = int(MAX_INCOMING_CAP)
-    remaining = {row["name"]: cap for _, row in targets.iterrows()}
-
-    # Round-robin distribution for maximum balance
-    target_names = targets.sort_values("power", ascending=False)["name"].tolist()
+    # Each target can only be reinforced by one sender
+    available_targets = set(targets["name"].tolist())
     result = {s: [] for s in senders["name"].tolist()}
     
+    # Create a list of all senders with their slot counts
     sender_slots = []
     for _, sender in senders.iterrows():
         for _ in range(int(sender["slots_to_send"])):
@@ -216,57 +210,67 @@ def compute_balanced_assignments(online_df: pd.DataFrame) -> dict:
     
     random.shuffle(sender_slots)
     
+    # Assign each sender to a unique target
+    target_list = list(available_targets)
+    random.shuffle(target_list)
+    
     target_index = 0
     for sender in sender_slots:
-        attempts = 0
-        while attempts < len(target_names):
-            target = target_names[target_index % len(target_names)]
-            if target != sender and remaining.get(target, 0) > 0:
+        if target_index < len(target_list):
+            target = target_list[target_index]
+            if target != sender:  # Don't reinforce yourself
                 result[sender].append(target)
-                remaining[target] -= 1
                 target_index += 1
-                break
-            target_index += 1
-            attempts += 1
-    
+            else:
+                # If target is the sender, find next available target
+                for i in range(len(target_list)):
+                    next_target = target_list[(target_index + i + 1) % len(target_list)]
+                    if next_target != sender:
+                        result[sender].append(next_target)
+                        target_index += 1
+                        break
+
     return result
 
 def compute_power_based_assignments(online_df: pd.DataFrame) -> dict:
-    """Power-based matching: reinforces allies with similar power levels."""
+    """Power-based matching: each target gets reinforced by only one sender."""
     senders = online_df.copy()
     targets = online_df.copy()
 
-    total_slots = int(senders["slots_to_send"].sum())
-    if MAX_INCOMING_CAP is None:
-        cap = max(1, math.ceil(total_slots / max(1, len(targets))) + 1)
-    else:
-        cap = int(MAX_INCOMING_CAP)
-    remaining = {row["name"]: cap for _, row in targets.iterrows()}
+    # Each target can only be reinforced by one sender
+    available_targets = set(targets["name"].tolist())
+    result = {s: [] for s in senders["name"].tolist()}
+    
+    # Create a list of all senders with their slot counts
+    sender_slots = []
+    for _, sender in senders.iterrows():
+        for _ in range(int(sender["slots_to_send"])):
+            sender_slots.append(sender["name"])
+    
+    random.shuffle(sender_slots)
+    
+    # For each sender, find their nearest power match that hasn't been assigned
+    for sender in sender_slots:
+        if not available_targets:
+            break
+            
+        # Find the closest power match for this sender
+        sender_power = senders.loc[senders["name"] == sender, "power"].iloc[0]
+        best_target = None
+        min_power_diff = float('inf')
+        
+        for target in available_targets:
+            if target != sender:  # Don't reinforce yourself
+                target_power = targets.loc[targets["name"] == target, "power"].iloc[0]
+                power_diff = abs(sender_power - target_power)
+                if power_diff < min_power_diff:
+                    min_power_diff = power_diff
+                    best_target = target
+        
+        if best_target:
+            result[sender].append(best_target)
+            available_targets.remove(best_target)
 
-    # Precompute nearest target names for each sender
-    nearest = {}
-    for _, s in senders.iterrows():
-        cand = []
-        for _, t in targets.iterrows():
-            if s["name"] == t["name"]:
-                continue
-            cand.append((t["name"], abs(int(s["power"]) - int(t["power"]))))
-        cand.sort(key=lambda x: x[1])
-        nearest[s["name"]] = [n for (n, _) in cand]
-
-    # Randomize sender order slightly to reduce bias
-    sender_names = senders["name"].tolist()
-    random.shuffle(sender_names)
-
-    result = {s: [] for s in sender_names}
-    for s in sender_names:
-        k = int(senders.loc[senders["name"] == s, "slots_to_send"].iloc[0])
-        for t in nearest[s]:
-            if remaining.get(t, 0) > 0 and len(result[s]) < k:
-                result[s].append(t)
-                remaining[t] -= 1
-            if len(result[s]) >= k:
-                break
     return result
 
 def save_assignments(assign_map: dict):
@@ -334,14 +338,20 @@ with st.expander("📋 How to Use This App", expanded=False):
        - **⚡ Weaker players (under 50M)**: Use 2-3 slots to avoid overextending
     3. **👥 View Roster**: See all registered members and their power levels
     4. **🎯 Check Assignments**: See who you should reinforce and who will reinforce you
-    5. **⏰ Event Duration**: Your registration lasts for the entire event (about a week)
+    5. **⏰ Event Timeline**: Register 1 hour before event, board locks 5 minutes before start
     6. **📍 Use Coordinates**: Find allies easily with their X,Y coordinates
     
     **For Admins:**
     1. **Enter Password**: Use the admin password in the sidebar
     2. **Choose Mode**: Select between Balanced Distribution or Power-Based Matching
-    3. **Lock Board**: Prevent assignment changes during events
-    4. **Reset Event**: Clear all data when event ends
+    3. **Lock Board**: Lock assignments 5 minutes before event starts
+    4. **Reset Event**: Clear all data after event ends (data resets for next event)
+    
+    **📅 Event Process:**
+    - **1 Hour Before**: Members register for the event
+    - **5 Minutes Before**: Admin locks the board (no more changes)
+    - **During Event**: Members follow their assigned reinforcements
+    - **After Event**: Data is wiped clean for the next event
     
     **Assignment Modes:**
     - **Balanced**: Everyone gets equal reinforcements (fair play)
@@ -355,7 +365,12 @@ st.sidebar.button("Refresh now")
 st.sidebar.markdown("---")
 
 if ALLIANCE_PASSCODE:
-    code = st.sidebar.text_input("Password (R4 + R5)", type="password")
+    code = st.sidebar.text_input("Password (R4 + R5)", type="password", key="admin_password")
+    if st.sidebar.button("🔓 Login", type="primary", use_container_width=True):
+        if code.strip() == ALLIANCE_PASSCODE:
+            st.sidebar.success("✅ Admin access granted!")
+        else:
+            st.sidebar.error("❌ Invalid password")
     authed = (code.strip() == ALLIANCE_PASSCODE)
 else:
     authed = True

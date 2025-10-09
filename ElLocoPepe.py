@@ -224,12 +224,15 @@ def compute_assignments(online_df: pd.DataFrame) -> dict:
         return compute_power_based_assignments(online_df)
 
 def compute_balanced_assignments(online_df: pd.DataFrame) -> dict:
-    """Balanced distribution: everyone sends and receives the same number of marches."""
+    """Balanced distribution: ensure everyone receives roughly equal reinforcements."""
     senders = online_df.copy()
     targets = online_df.copy()
 
     # Create result dictionary
     result = {s: [] for s in senders["name"].tolist()}
+    
+    # Track how many reinforcements each target has received
+    target_reinforcement_count = {name: 0 for name in targets["name"].tolist()}
     
     # Sort senders by furnace level (highest first) to give priority to stronger players
     senders_sorted = senders.sort_values("furnace_level", ascending=False)
@@ -248,19 +251,22 @@ def compute_balanced_assignments(online_df: pd.DataFrame) -> dict:
             furnace_level = int(sender["furnace_level"])
             marches_to_send = calculate_marches(furnace_level)
         
-        # Find all available targets (excluding self only)
+        # Find available targets, prioritizing those with fewer reinforcements
         available_targets = []
         for _, target in targets.iterrows():
             if target["name"] != sender_name:
-                available_targets.append(target["name"])
+                target_name = target["name"]
+                reinforcement_count = target_reinforcement_count[target_name]
+                available_targets.append((target_name, reinforcement_count))
         
-        # Shuffle to spread reinforcements evenly across all allies
-        random.shuffle(available_targets)
+        # Sort by reinforcement count (those with fewer reinforcements first)
+        available_targets.sort(key=lambda x: x[1])
         
-        # Assign the full number of marches (can assign to same targets as others)
+        # Assign the full number of marches, prioritizing balanced distribution
         for i in range(min(marches_to_send, len(available_targets))):
-            target_name = available_targets[i]
+            target_name = available_targets[i][0]
             result[sender_name].append(target_name)
+            target_reinforcement_count[target_name] += 1
 
     return result
 
@@ -480,6 +486,32 @@ def should_auto_lock():
         
         # Auto-lock 5 minutes before event
         return time_until_event.total_seconds() <= 300  # 5 minutes = 300 seconds
+
+def simulate_40_players():
+    """Simulate 40 players with random furnace levels 20-30 for testing"""
+    import random
+    
+    # Clear existing data
+    with store.lock:
+        store.members.clear()
+        store.assignments.clear()
+        store.batch_id = None
+        store.locked = False
+    
+    # Generate 40 random players
+    player_names = [
+        "Adam", "Amelia", "Bimba", "Cuse", "Llama", "Mark", "Mike", "Mob", "Test", "Zero",
+        "Alex", "Bella", "Chris", "Diana", "Ethan", "Fiona", "George", "Hannah", "Ian", "Julia",
+        "Kevin", "Luna", "Max", "Nina", "Oscar", "Paula", "Quinn", "Ruby", "Sam", "Tina",
+        "Uma", "Victor", "Wendy", "Xavier", "Yara", "Zoe", "Alpha", "Beta", "Gamma", "Delta"
+    ]
+    
+    for name in player_names:
+        # Random furnace level between 20-30
+        furnace_level = random.randint(20, 30)
+        upsert_member(name, furnace_level)
+    
+    return f"✅ Simulated 40 players with furnace levels 20-30"
 
 def reset_event():
     with store.lock:
@@ -867,46 +899,6 @@ with st.expander("🔧 Admin Tools", expanded=False):
         
         reinforcement_plan = format_reinforcement_plan()
         
-        # Check if plan exceeds character limit
-        plan_chunks = format_reinforcement_plan_chunks(512)
-        
-        if len(plan_chunks) == 1:
-            # Single chunk - show normally
-            st.text_area(
-                "Reinforcement Plan (Click in text area, then Ctrl+A to select all, then Ctrl+C to copy):",
-                value=reinforcement_plan,
-                height=400,
-                help="Click in the text area, then press Ctrl+A to select all text, then Ctrl+C to copy. Paste directly into your game chat."
-            )
-        else:
-            # Multiple chunks - show each separately
-            st.warning(f"⚠️ **Plan exceeds 512 character limit!** Split into {len(plan_chunks)} chunks for easier copying.")
-            
-            for i, chunk in enumerate(plan_chunks, 1):
-                st.subheader(f"📋 Chunk {i} of {len(plan_chunks)} ({len(chunk)} characters)")
-                st.text_area(
-                    f"Copy Chunk {i}:",
-                    value=chunk,
-                    height=150,
-                    key=f"chunk_{i}",
-                    help=f"Mobile: Tap & hold → Select All → Copy. PC: Ctrl+A → Ctrl+C. Mac: Cmd+A → Cmd+C. ({len(chunk)} characters)"
-                )
-        
-        # Mobile-friendly individual assignments
-        st.subheader("📱 Mobile-Friendly Individual Assignments")
-        st.info("💡 **Easier for mobile**: Copy each assignment individually below")
-        
-        for sender, targets in sorted(store.assignments.items()):
-            if targets:
-                targets_str = ",".join(targets)
-                assignment_text = f"{sender}:{targets_str}"
-                
-                st.text_input(
-                    f"{sender}'s assignments:",
-                    value=assignment_text,
-                    key=f"mobile_{sender}",
-                    help=f"Copy this assignment for {sender}"
-                )
         
         # Game-friendly format (semicolon separated)
         st.subheader("🎮 Game-Friendly Format (Recommended)")
@@ -930,6 +922,17 @@ with st.expander("🔧 Admin Tools", expanded=False):
         
         
         st.divider()
+        
+        # Test Simulation Button
+        if st.button(
+            "🧪 Simulate 40 Players (Test)", 
+            type="secondary", 
+            disabled=not authed,
+            help="Generate 40 test players with random furnace levels 20-30"
+        ):
+            result = simulate_40_players()
+            st.success(result)
+            st.rerun()
         
         # Reset Event Button
         if st.button(
